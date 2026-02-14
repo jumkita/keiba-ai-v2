@@ -931,64 +931,207 @@ def _write_predictions_json(report_rows: list[dict], _output_base_path: Path | N
     return payload
 
 
-def _write_mobile_html(payload: dict) -> None:
-    """スマホ閲覧用の単体HTMLを docs/index.html に出力。データはHTML内に直接埋め込み。"""
-    updated_at = payload.get("updated_at", "")
-    target_date = payload.get("target_date", "")
-    races = payload.get("races", [])
+def _write_mobile_html(report_rows: list[dict]) -> None:
+    """インタラクティブ分析ダッシュボードを docs/index.html に出力。全頭データをJSON埋め込み。"""
+    by_race = defaultdict(list)
+    for r in report_rows:
+        by_race[r["race_key"]].append(r)
 
-    # レースカードのHTMLを組み立て（スコア80以上は赤文字）
-    cards_html = []
-    for race in races:
-        race_name = _escape_html(race.get("race_name", ""))
-        rows = []
-        for p in race.get("predictions", []):
-            mark = _escape_html(p.get("mark", ""))
-            name = _escape_html(p.get("horse_name", ""))
-            score = int(p.get("score", 0))
-            score_class = "text-danger" if score >= 80 else ""
-            rows.append(
-                f'<div class="d-flex justify-content-between align-items-center py-2 border-bottom border-secondary">'
-                f'<span class="fw-bold">{mark} {name}</span>'
-                f'<span class="score {score_class}">(Score: {score})</span></div>'
-            )
-        inner = "".join(rows)
-        cards_html.append(
-            f'<div class="card bg-dark border-secondary mb-3">'
-            f'<div class="card-header text-primary border-secondary">{race_name}</div>'
-            f'<div class="card-body py-2">{inner}</div></div>'
-        )
-    main_body = "\n".join(cards_html)
+    racing_data = []
+    for rk in sorted(by_race.keys()):
+        parts = rk.split("_")
+        date_part = parts[0] if len(parts) >= 1 else ""
+        date_label = f"{date_part[:4]}/{date_part[4:6]}/{date_part[6:8]}" if len(date_part) == 8 else date_part
+        course_code = parts[1] if len(parts) >= 2 else ""
+        course_name = PLACE_CODE_MAP.get(course_code, course_code)
+        race_no = _to_int(parts[2], 0) if len(parts) >= 3 else 0
+        race_name = f"{course_name}{race_no}R" if course_name else rk
+        items = sorted(by_race[rk], key=lambda x: -_to_float(x.get("final_score", 0)))
+        horses = []
+        for r in items:
+            horses.append({
+                "mark": _to_str(r.get("mark", "")),
+                "umaban": _to_int(r.get("umaban", 0)),
+                "horse_name": _to_str(r.get("horse_name", "")),
+                "score": round(_to_float(r.get("final_score", 0)) * 100),
+            })
+        racing_data.append({
+            "date": date_part,
+            "dateLabel": date_label,
+            "course": course_name,
+            "race_no": race_no,
+            "race_name": race_name,
+            "horses": horses,
+        })
+
+    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    target_date = racing_data[0]["date"] if racing_data else ""
+
+    # </script> をエスケープしてJSON埋め込み
+    json_str = json.dumps(racing_data, ensure_ascii=False)
+    if "</script>" in json_str:
+        json_str = json_str.replace("</script>", "<\\/script>")
 
     html = f"""<!DOCTYPE html>
 <html lang="ja" data-bs-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI競馬予測 ({MOBILE_HTML_TITLE_VERSION}) - {_escape_html(target_date)}</title>
+  <title>AI競馬予測 ({MOBILE_HTML_TITLE_VERSION}) - 分析ダッシュボード</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
     :root {{ --accent-blue: #0d6efd; }}
     body {{ background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }}
-    .card {{ background: #111; }}
+    .panel {{ background: #111; border: 1px solid #333; }}
     .text-primary {{ color: var(--accent-blue) !important; }}
-    .score {{ font-weight: 600; }}
-    .text-danger {{ color: #dc3545 !important; }}
+    #filter-header {{ position: sticky; top: 0; z-index: 100; }}
+    .table-horses {{ font-size: 0.95rem; }}
+    .table-horses th {{ border-color: #333; white-space: nowrap; }}
+    .table-horses td {{ border-color: #333; vertical-align: middle; }}
+    .row-score-high {{ background: rgba(220, 53, 69, 0.2); }}
+    .row-score-mid {{ background: rgba(253, 126, 20, 0.15); }}
+    .row-score-low {{ background: rgba(13, 110, 253, 0.15); }}
+    .sort-toggle {{ cursor: pointer; user-select: none; }}
     footer {{ color: #888; font-size: 0.9rem; }}
   </style>
 </head>
 <body class="d-flex flex-column min-vh-100">
-  <header class="bg-dark border-bottom border-secondary py-3">
+  <header id="filter-header" class="panel border-bottom border-secondary py-3 mb-0">
     <div class="container">
-      <h1 class="h4 mb-0 text-primary">AI競馬予測 ({MOBILE_HTML_TITLE_VERSION}) - {_escape_html(target_date)}</h1>
+      <h1 class="h5 mb-3 text-primary">AI競馬予測 ({MOBILE_HTML_TITLE_VERSION}) - 分析ダッシュボード</h1>
+      <div class="row g-2">
+        <div class="col-12 col-md-4">
+          <label class="form-label small mb-0">開催日</label>
+          <select id="sel-date" class="form-select form-select-sm bg-dark text-light border-secondary"></select>
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label small mb-0">競馬場</label>
+          <select id="sel-course" class="form-select form-select-sm bg-dark text-light border-secondary"></select>
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label small mb-0">レース番号</label>
+          <select id="sel-race" class="form-select form-select-sm bg-dark text-light border-secondary"></select>
+        </div>
+      </div>
+      <div class="mt-2 d-flex align-items-center gap-2">
+        <span class="small text-secondary">並び:</span>
+        <span id="sort-score" class="sort-toggle badge bg-danger">スコア順</span>
+        <span id="sort-umaban" class="sort-toggle badge bg-secondary">馬番順</span>
+      </div>
     </div>
   </header>
-  <main class="container flex-grow-1 py-4">
-    {main_body}
+  <main class="container flex-grow-1 py-3">
+    <div id="race-title" class="h5 text-primary mb-2"></div>
+    <div class="table-responsive">
+      <table class="table table-dark table-horses table-striped">
+        <thead>
+          <tr>
+            <th>印</th>
+            <th>馬番</th>
+            <th>馬名</th>
+            <th>AIスコア</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-horses"></tbody>
+      </table>
+    </div>
   </main>
   <footer class="container py-3 border-top border-secondary">
     Updated at: {_escape_html(updated_at)}
   </footer>
+  <script>
+    const racingData = {json_str};
+    let sortByScore = true;
+
+    function getUniqueDates() {{
+      const set = new Set(racingData.map(r => r.date));
+      return Array.from(set).sort();
+    }}
+    function getCoursesByDate(date) {{
+      const set = new Set(racingData.filter(r => r.date === date).map(r => r.course));
+      return Array.from(set).sort((a, b) => (a || '').localeCompare(b || ''));
+    }}
+    function getRacesByDateCourse(date, course) {{
+      return racingData.filter(r => r.date === date && r.course === course).map(r => ({{
+        race_no: r.race_no,
+        race_name: r.race_name,
+        horses: r.horses
+      }})).sort((a, b) => a.race_no - b.race_no);
+    }}
+    function getCurrentRace() {{
+      const date = document.getElementById('sel-date').value;
+      const course = document.getElementById('sel-course').value;
+      const raceNo = document.getElementById('sel-race').value;
+      const list = getRacesByDateCourse(date, course);
+      return list.find(r => String(r.race_no) === raceNo) || list[0] || null;
+    }}
+    function rowClass(score) {{
+      if (score >= 80) return 'row-score-high';
+      if (score >= 60) return 'row-score-mid';
+      return 'row-score-low';
+    }}
+    function renderTable() {{
+      const race = getCurrentRace();
+      const tbody = document.getElementById('tbody-horses');
+      const titleEl = document.getElementById('race-title');
+      if (!race) {{
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">レースを選択してください</td></tr>';
+        titleEl.textContent = '';
+        return;
+      }}
+      titleEl.textContent = race.race_name + ' — 全頭';
+      let horses = race.horses.slice();
+      if (!sortByScore) horses.sort((a, b) => (a.umaban || 0) - (b.umaban || 0));
+      tbody.innerHTML = horses.map(h => {{
+        const cls = rowClass(h.score);
+        return `<tr class="${{cls}}"><td>${{escapeHtml(h.mark)}}</td><td>${{h.umaban}}</td><td>${{escapeHtml(h.horse_name)}}</td><td>${{h.score}}</td></tr>`;
+      }}).join('');
+    }}
+    function escapeHtml(s) {{
+      if (s == null) return '';
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }}
+    function fillDates() {{
+      const sel = document.getElementById('sel-date');
+      const dates = getUniqueDates();
+      sel.innerHTML = dates.map(d => {{
+        const r = racingData.find(x => x.date === d);
+        return `<option value="${{d}}">${{r ? r.dateLabel : d}}</option>`;
+      }}).join('');
+      if (dates.length) sel.value = dates[0];
+    }}
+    function fillCourses() {{
+      const date = document.getElementById('sel-date').value;
+      const sel = document.getElementById('sel-course');
+      const courses = getCoursesByDate(date);
+      sel.innerHTML = courses.map(c => `<option value="${{escapeHtml(c)}}">${{escapeHtml(c)}}</option>`).join('');
+      if (courses.length) sel.value = courses[0];
+    }}
+    function fillRaces() {{
+      const date = document.getElementById('sel-date').value;
+      const course = document.getElementById('sel-course').value;
+      const sel = document.getElementById('sel-race');
+      const races = getRacesByDateCourse(date, course);
+      sel.innerHTML = races.map(r => `<option value="${{r.race_no}}">${{r.race_no}}R</option>`).join('');
+      if (races.length) sel.value = String(races[0].race_no);
+    }}
+    function onFilterChange() {{
+      fillCourses();
+      fillRaces();
+      renderTable();
+    }}
+    document.getElementById('sel-date').addEventListener('change', onFilterChange);
+    document.getElementById('sel-course').addEventListener('change', function() {{ fillRaces(); renderTable(); }});
+    document.getElementById('sel-race').addEventListener('change', renderTable);
+    document.getElementById('sort-score').addEventListener('click', function() {{ sortByScore = true; document.getElementById('sort-umaban').classList.remove('bg-primary'); document.getElementById('sort-umaban').classList.add('bg-secondary'); this.classList.add('bg-danger'); this.classList.remove('bg-secondary'); renderTable(); }});
+    document.getElementById('sort-umaban').addEventListener('click', function() {{ sortByScore = false; document.getElementById('sort-score').classList.remove('bg-danger'); document.getElementById('sort-score').classList.add('bg-secondary'); this.classList.add('bg-primary'); this.classList.remove('bg-secondary'); renderTable(); }});
+    fillDates();
+    fillCourses();
+    fillRaces();
+    renderTable();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>"""
@@ -1425,7 +1568,7 @@ def main() -> int:
     build_html_report(report_rows, out_path)
     # JSON 出力（配信用・docs/weekly_prediction.json）+ モバイル用HTML（docs/index.html）
     payload = _write_predictions_json(report_rows)
-    _write_mobile_html(payload)
+    _write_mobile_html(report_rows)
     # MLOps: 予測ログを追記保存（後日の精度検証用）
     _append_prediction_log(report_rows)
     print(f"予測完了")

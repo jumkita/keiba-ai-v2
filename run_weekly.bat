@@ -35,6 +35,23 @@ if exist "%~dp0jv_data\reports\evaluation_summary.csv" (
 
 echo.
 echo ============================================================
+echo GitHub へ自動デプロイ (docs 等をプッシュ)
+echo ============================================================
+git add .
+git commit -m "Auto-update: Weekly Prediction %date%"
+if %ERRORLEVEL% equ 0 (
+    git push origin main
+    if %ERRORLEVEL% equ 0 (
+        echo プッシュ完了。GitHub Pages が更新されます。
+    ) else (
+        echo プッシュに失敗しました。リモート設定・認証を確認してください。
+    )
+) else (
+    echo 変更がありませんでした。またはコミットに失敗しました。
+)
+
+echo.
+echo ============================================================
 echo 実行完了。任意のキーを押すと終了します。
 echo ============================================================
 pause
