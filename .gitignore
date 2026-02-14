@@ -1,0 +1,40 @@
+# 巨大データ・外部ツール（絶対にアップロードしない）
+jv_data/
+TukuAcc7/
+
+# ビルド出力（GitHub Pages は docs/ を使用するため dist は不要）
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.eggs/
+*.egg-info/
+*.egg
+
+# ログ
+*.log
+logs/
+
+# IDE
+.cursor/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 仮想環境（任意）
+.venv/
+venv/
+env/
